@@ -53,9 +53,9 @@ def setup_project(config, exp_name):
     project_dir = top_dir + today + "/" + exp_name + "/"
 
     # name the project based on its configuration
-    for key, value in config.items():
-        if key != "trial" and key != "load_trained":
-            project_dir += key[:-3] + "_" + str(value)
+    # for key, value in config.items():
+    #     if key != "trial" and key != "load_trained":
+    #         project_dir += key[:-3] + "_" + str(value)
 
     project_dir += "/trial_" + str(config["trial"])
 
@@ -81,6 +81,38 @@ def setup_project(config, exp_name):
 
     return project_dir
 
+def simple_run(config):
+    """ Run this to reproduce the natural environment described in the paper.
+    """
+    config["trial"] = 0
+    config["agent_view"] = 7
+    config["gen_length"] = 1000
+    config["num_gens"] = 5
+    config["eval_freq"] = 1
+    config["nb_agents"] = 10000
+    config["grid_width"] = 200
+    config["grid_length"] = 400
+    config["init_food"] = 16000
+    config["resources_on"] = False
+    config["niches_scale"] = 200
+    config["regrowth_scale"] = 0.00
+    config["max_age"] = 650
+    config["time_reproduce"] = 140
+    config["time_death"] = 200
+    config["energy_decay"] = 0.0
+    config["spontaneous_regrow"] = 0.00000
+    config["seed"] = 0
+    config["examine_poison"] = False
+    config["wall_kill"] = 1
+
+    #project_dir = "."
+
+    #with open(project_dir + "/config.yaml", "r") as f:
+    #    config = yaml.safe_load(f)
+    project_dir = setup_project(config, "simple_run")
+
+    simulate(project_dir)
+
 
 def train_paper(config):
     """ Run this to reproduce the natural environment described in the paper.
@@ -88,12 +120,13 @@ def train_paper(config):
     config["trial"] = 0
     config["agent_view"] = 7
     config["gen_length"] = 1000
-    config["num_gens"] = 1000
+    config["num_gens"] = 5
     config["eval_freq"] = 1
     config["nb_agents"] = 1000
     config["grid_width"] = 200
     config["grid_length"] = 400
     config["init_food"] = 16000
+    config["resources_on"] = False
     config["niches_scale"] = 200
     config["regrowth_scale"] = 0.002
     config["max_age"] = 650
@@ -138,7 +171,10 @@ if __name__ == "__main__":
               "place_resources": False,
               "examine_poison": False}
 
-    if mode == "natural":
+    if mode == "simple":
+        simple_run(config)
+
+    elif mode == "natural":
         train_paper(config)  # retrain the models used in the paper
 
     elif mode == "lab":

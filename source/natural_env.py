@@ -41,6 +41,7 @@ def simulate(project_dir):
                     init_food=config["init_food"],
                     SX=config["grid_length"],
                     SY=config["grid_width"],
+                    resources_on=config["resources_on"],
                     nb_agents=config["nb_agents"],
                     regrowth_scale=config["regrowth_scale"],
                     niches_scale=config["niches_scale"],
