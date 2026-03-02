@@ -128,7 +128,9 @@ class Gridworld(VectorizedTask):
                  niches_scale=200,
                  spontaneous_regrow=1 / 200000,
                  wall_kill=True,
+                 overlap=True
                  ):
+
         self.obs_shape = (AGENT_VIEW, AGENT_VIEW, 3)
         # self.obs_shape=11*5*4
         self.act_shape = tuple([5, ])
@@ -149,6 +151,7 @@ class Gridworld(VectorizedTask):
         self.resources_on = resources_on
         self.place_resources = place_resources
         self.reproduction_on = reproduction_on
+        self.overlap = overlap
 
         self.genome = DefaultGenome(
             num_inputs=(2 * AGENT_VIEW + 1) ** 2 * 3,
@@ -386,13 +389,52 @@ class Gridworld(VectorizedTask):
             grid = state.state
             energy = state.agents.energy
             alive = state.agents.alive
+            action_int = actions.astype(jnp.int32)
+
+            current_posx = state.agents.posx
+            current_posy = state.agents.posy
+
+            des_posx = current_posx - action_int[:, 1] + action_int[:, 3]
+            des_posy = current_posy - action_int[:, 2] + action_int[:, 4]
 
             # move agent
-            action_int = actions.astype(jnp.int32)
-            posx = state.agents.posx - action_int[:, 1] + action_int[:, 3]
-            posy = state.agents.posy - action_int[:, 2] + action_int[:, 4]
+            if self.overlap:
+                posx = des_posx
+                posy = des_posy
+            else:
+                # No overlap: energy-based conflict resolution
+                des_pos_id = des_posx * SY + des_posy
+                current_pos_id = current_posx * SY + current_posy
+                n = self.nb_agents
 
-            # wall
+                #Is the agent trying to move?
+                is_moving = (des_pos_id != current_pos_id) & (alive > 0)
+
+                #Check if destination is currently occupied by any alive agent
+                occupied_positions = jnp.where(alive > 0, current_pos_id, 0)
+                dest_occupied = (des_pos_id[:, None] == occupied_positions[None, :]).any(axis=1)
+
+                #Check for conflicts: multiple agents wanting same cell
+                same_dest = (des_pos_id[:, None] == des_pos_id[None, :])
+                same_dest = same_dest & (jnp.arange(n)[:, None] != jnp.arange(n)[None, :])
+                same_dest = same_dest & (is_moving[:, None] == is_moving[None, :])
+
+                #Agent loses if someone with higher energy wants same spot
+                #Tiebreak: lower index wins
+
+                higher_energy = same_dest & (energy[:, None] > energy[None, :])
+                same_energy_lower_index = same_dest & (energy[:, None] == energy[None, :]) & \
+                                          (jnp.arange(n)[:, None] < jnp.arange(n)[None, :])
+                loses_conflict = higher_energy.any(axis=1) | same_energy_lower_index.any(axis=1)
+
+                #Move succeeds if: trying to move, destination empty, and won conflicts
+                move_succeeds = is_moving & ~dest_occupied & ~loses_conflict
+
+                posx = jnp.where(move_succeeds, des_posx, current_posx)
+                posy = jnp.where(move_succeeds, des_posy, current_posy)
+
+
+                # wall
             hit_wall = state.state[posx, posy, 2] > 0
 
             if (wall_kill):
@@ -461,7 +503,7 @@ class Gridworld(VectorizedTask):
             nodes, conns, seqs, u_conns = state.agents.nodes, state.agents.conns, state.agents.seqs, state.agents.u_conns
 
 
-            #TODO Fix this function
+
             nodes, conns, seqs, u_conns, posx, posy, energy, time_good_level, time_alive, alive, nb_food, nb_offspring = jax.lax.cond(
                 reproducer.sum() > 0, mating_reproduce, lambda ai, px, py, n, c, s, u, e, tgl, k, ta, al, nf, no: (n, c, s, u, px, py, e, tgl, ta, al, nf, no),
                 *(
