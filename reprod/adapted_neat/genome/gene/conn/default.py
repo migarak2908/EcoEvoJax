@@ -36,7 +36,7 @@ class DefaultConn(BaseConn):
 
     def new_random_attrs(self, state, randkey):
         weight = (jax.random.normal(randkey, ()) * self.weight_init_std + self.weight_init_mean)
-        weight = jnp.clip(weight, min=self.weight_lower_bound, max=self.weight_upper_bound)
+        weight = jnp.clip(weight, a_min=self.weight_lower_bound, a_max=self.weight_upper_bound)
         return jnp.array([weight])
 
     def mutate(self, state, randkey, attr):
@@ -51,7 +51,7 @@ class DefaultConn(BaseConn):
             self.weight_replace_rate
         )
 
-        weight = jnp.clip(weight, min=self.weight_lower_bound, max=self.weight_upper_bound)
+        weight = jnp.clip(weight, a_min=self.weight_lower_bound, a_max=self.weight_upper_bound)
         return jnp.array([weight])
 
 

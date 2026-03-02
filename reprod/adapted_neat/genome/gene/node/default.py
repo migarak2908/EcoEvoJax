@@ -82,10 +82,10 @@ class DefaultNode(BaseNode):
         k1, k2, k3, k4 = jax.random.split(randkey, num=4)
 
         bias = jax.random.normal(k1, ()) * self.bias_init_std + self.bias_init_mean
-        bias = jnp.clip(bias, min=self.bias_lower_bound, max=self.bias_upper_bound)
+        bias = jnp.clip(bias, a_min=self.bias_lower_bound, a_max=self.bias_upper_bound)
 
         res = jax.random.normal(k2, ()) * self.response_init_std + self.response_init_mean
-        res = jnp.clip(res, min=self.response_lower_bound, max=self.response_upper_bound)
+        res = jnp.clip(res, a_min=self.response_lower_bound, a_max=self.response_upper_bound)
 
         agg = jax.random.choice(k3, self.aggregation_indices)
 
