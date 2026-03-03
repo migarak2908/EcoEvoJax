@@ -80,6 +80,7 @@ def simple_run(config):
     config["seed"] = 0
     config["examine_poison"] = False
     config["wall_kill"] = 1
+    config["overlap"] = True
 
     # project_dir = "."
 

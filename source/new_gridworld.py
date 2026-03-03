@@ -236,7 +236,7 @@ class Gridworld(VectorizedTask):
         self._reset_fn = jax.jit(reset_fn)
 
         def mating_reproduce(action_int, posx, posy, nodes, conns, seqs, u_conns, energy, time_good_level, key, time_alive, alive, nb_food,
-                      nb_offspring):
+                      nb_offspring, grid):
 
             """
             1. Create dead mask as before
@@ -251,35 +251,86 @@ class Gridworld(VectorizedTask):
 
             next_key, key = random.split(key)
 
+            dx = jnp.abs(posx[:, None] - posx[None, :])
+            dy = jnp.abs(posy[:, None] - posy[None, :])
+
+            distance = jnp.maximum(dx, dy)
+            in_view = distance <= AGENT_VIEW
+
+            in_view = in_view & (~jnp.eye(num_agents, dtype=bool))
+
 
             reproducers = (action_int[:, 5] == 1) & (time_good_level > self.time_reproduce) & (alive > 0)
-            same_x = posx[:, None] == posx[None, :]
-            same_y = posy[:, None] == posy[None, :]
+            # same_x = posx[:, None] == posx[None, :]
+            # same_y = posy[:, None] == posy[None, :]
+            #
+            # same_pos = same_x & same_y
+            # same_pos = same_pos & (~jnp.eye(num_agents, dtype=bool))
+            #
+            # valid_pairs = same_pos & (reproducers[:, None] & reproducers[None, :])
 
-            same_pos = same_x & same_y
-            same_pos = same_pos & (~jnp.eye(num_agents, dtype=bool))
-
-            valid_pairs = same_pos & (reproducers[:, None] & reproducers[None, :])
+            valid_pairs = in_view & (reproducers[:, None] & reproducers[None, :])
 
             valid_pairs = jnp.triu(valid_pairs, k=1)
 
-            # parent_i, parent_j = jnp.where(valid_pairs, size=max_pairs, fill=-1)
-            parent_i, parent_j = jnp.where(valid_pairs, size=max_pairs)
 
-            # num_pairs = (parent_i >= 0).sum()
-            # parent_i = jnp.where(parent_i < 0, 0, parent_i)  # safe dummy index
-            # parent_j = jnp.where(parent_j < 0, 0, parent_j)
+            parent_i, parent_j = jnp.where(valid_pairs, size=max_pairs)
             num_pairs = valid_pairs.sum()
 
+            offsets_x, offsets_y = jnp.mgrid[-AGENT_VIEW:AGENT_VIEW+1, -AGENT_VIEW:AGENT_VIEW+1]
+            offsets_x = offsets_x.flatten()
+            offsets_y = offsets_y.flatten()
+
+            candidate_x = posx[parent_i][:, None] + offsets_x[None, :]
+            candidate_y = posy[parent_i][:, None] + offsets_y[None, :]
+
+            candidate_x = jnp.clip(candidate_x, 0, SX-1)
+            candidate_y = jnp.clip(candidate_y, 0, SY - 1)
+
+            candidate_pos_id = candidate_x * SY + candidate_y
+            alive_pos_id = jnp.where(alive > 0, posx * SY + posy, -1)
+            candidate_occupied = (candidate_pos_id[:, :, None] == alive_pos_id[None, None, :]).any(axis=2)
+
+            candidate_is_wall = grid[candidate_x, candidate_y, 2] > 0
+
+            candidate_available = ~candidate_occupied & ~candidate_is_wall
+
+            has_space = candidate_available.any(axis=1)
+
+            next_key, key = random.split(key)
+            random_priority = random.uniform(next_key, candidate_available.shape)
+            random_priority = jnp.where(candidate_available, random_priority, -1.0)
+            selected_idx = jnp.argmax(random_priority, axis=1)
+
+            offspring_x = jnp.take_along_axis(candidate_x, selected_idx[:, None], axis=1).squeeze()
+            offspring_y = jnp.take_along_axis(candidate_y, selected_idx[:, None], axis=1).squeeze()
+
+            # Resolve conflicts: multiple pairs wanting same offspring cell
+            offspring_pos_id = offspring_x * SY + offspring_y
+            same_cell = (offspring_pos_id[:, None] == offspring_pos_id[None, :])
+            same_cell = same_cell & (jnp.arange(max_pairs)[:, None] != jnp.arange(max_pairs)[None, :])
+            same_cell = same_cell & has_space[:, None] & has_space[None, :]
+
+            # Tiebreaker: combined parent energy
+            combined_energy = energy[parent_i] + energy[parent_j]
+            higher_energy = same_cell & (combined_energy[None, :] > combined_energy[:, None])
+            same_energy_lower_idx = same_cell & (combined_energy[None, :] == combined_energy[:, None]) & \
+                                    (jnp.arange(max_pairs)[None, :] < jnp.arange(max_pairs)[:, None])
+            loses_conflict = higher_energy.any(axis=1) | same_energy_lower_idx.any(axis=1)
 
             dead = (alive == 0)
-            # empty_spots = jnp.where(dead, size=self.nb_agents, fill=-1)[0]
             empty_spots = jnp.where(dead, size=self.nb_agents)[0]
             num_empty = dead.sum()
 
-            # num_offspring = jnp.minimum(num_pairs, dead.sum())  # max offspring = # dead
-            num_offspring = jnp.minimum(num_pairs, num_empty)
+            can_reproduce = has_space & ~loses_conflict
+            num_reproducing = jnp.minimum(can_reproduce.sum(), num_empty)
 
+            place_mask = (jnp.arange(max_pairs) < num_pairs) & can_reproduce
+
+            cumsum_places = jnp.cumsum(place_mask)
+            place_mask = place_mask & (cumsum_places <= num_empty)
+
+            target_spots = empty_spots[:max_pairs]
 
             parent1_nodes = nodes[parent_i]
             parent2_nodes = nodes[parent_j]
@@ -309,14 +360,14 @@ class Gridworld(VectorizedTask):
                 self.genome.transform, in_axes=(None, 0, 0)
             )(None, offspring_nodes, offspring_conns)
 
-            place_mask = jnp.arange(max_pairs) < num_offspring
+            # place_mask = jnp.arange(max_pairs) < num_offspring
             node_mask = place_mask[:, None, None]
             conn_mask = place_mask[:, None, None]
             seq_mask = place_mask[:, None]
             u_conn_mask = place_mask[:, None, None]
 
-            target_spots = empty_spots[:max_pairs]
-            target_spots = jnp.where(target_spots < 0, 0, target_spots)
+            # target_spots = empty_spots[:max_pairs]
+            # target_spots = jnp.where(target_spots < 0, 0, target_spots)
 
             nodes = nodes.at[target_spots].set(
                 jnp.where(node_mask, offspring_nodes, nodes[target_spots])
@@ -332,11 +383,17 @@ class Gridworld(VectorizedTask):
             )
 
             # Update positions for offspring
+            # posx = posx.at[target_spots].set(
+            #     jnp.where(place_mask, posx[parent_i], posx[target_spots])
+            # )
+            # posy = posy.at[target_spots].set(
+            #     jnp.where(place_mask, posy[parent_i], posy[target_spots])
+            # )
             posx = posx.at[target_spots].set(
-                jnp.where(place_mask, posx[parent_i], posx[target_spots])
+                jnp.where(place_mask, offspring_x, posx[target_spots])
             )
             posy = posy.at[target_spots].set(
-                jnp.where(place_mask, posy[parent_i], posy[target_spots])
+                jnp.where(place_mask, offspring_y, posy[target_spots])
             )
 
             energy = energy.at[target_spots].set(
@@ -505,10 +562,10 @@ class Gridworld(VectorizedTask):
 
 
             nodes, conns, seqs, u_conns, posx, posy, energy, time_good_level, time_alive, alive, nb_food, nb_offspring = jax.lax.cond(
-                reproducer.sum() > 0, mating_reproduce, lambda ai, px, py, n, c, s, u, e, tgl, k, ta, al, nf, no: (n, c, s, u, px, py, e, tgl, ta, al, nf, no),
+                reproducer.sum() > 0, mating_reproduce, lambda ai, px, py, n, c, s, u, e, tgl, k, ta, al, nf, no, g: (n, c, s, u, px, py, e, tgl, ta, al, nf, no),
                 *(
                     action_int, posx, posy, nodes, conns, seqs, u_conns, energy, time_good_level, next_key,
-                    time_alive, alive, nb_food, state.agents.nb_offspring))
+                    time_alive, alive, nb_food, state.agents.nb_offspring, grid))
 
 
 

@@ -46,6 +46,7 @@ def simulate(project_dir):
         energy_decay=config["energy_decay"],
         spontaneous_regrow=config["spontaneous_regrow"],
         wall_kill=config["wall_kill"],
+        overlap=True
     )
 
     state = env.reset(env_key)
