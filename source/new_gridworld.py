@@ -411,20 +411,20 @@ class Gridworld(VectorizedTask):
                 is_moving = (des_pos_id != current_pos_id) & (alive > 0)
 
                 #Check if destination is currently occupied by any alive agent
-                occupied_positions = jnp.where(alive > 0, current_pos_id, 0)
+                occupied_positions = jnp.where(alive > 0, current_pos_id, -1)
                 dest_occupied = (des_pos_id[:, None] == occupied_positions[None, :]).any(axis=1)
 
                 #Check for conflicts: multiple agents wanting same cell
                 same_dest = (des_pos_id[:, None] == des_pos_id[None, :])
                 same_dest = same_dest & (jnp.arange(n)[:, None] != jnp.arange(n)[None, :])
-                same_dest = same_dest & (is_moving[:, None] == is_moving[None, :])
+                same_dest = same_dest & is_moving[:, None] & is_moving[None, :]
 
                 #Agent loses if someone with higher energy wants same spot
                 #Tiebreak: lower index wins
 
-                higher_energy = same_dest & (energy[:, None] > energy[None, :])
+                higher_energy = same_dest & (energy[None, :] > energy[:, None])
                 same_energy_lower_index = same_dest & (energy[:, None] == energy[None, :]) & \
-                                          (jnp.arange(n)[:, None] < jnp.arange(n)[None, :])
+                                          jnp.arange(n)[None, :] < (jnp.arange(n)[:, None])
                 loses_conflict = higher_energy.any(axis=1) | same_energy_lower_index.any(axis=1)
 
                 #Move succeeds if: trying to move, destination empty, and won conflicts
@@ -434,7 +434,7 @@ class Gridworld(VectorizedTask):
                 posy = jnp.where(move_succeeds, des_posy, current_posy)
 
 
-                # wall
+            # wall
             hit_wall = state.state[posx, posy, 2] > 0
 
             if (wall_kill):
