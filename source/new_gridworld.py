@@ -128,7 +128,10 @@ class Gridworld(VectorizedTask):
                  niches_scale=200,
                  spontaneous_regrow=1 / 200000,
                  wall_kill=True,
-                 overlap=True
+                 overlap=True,
+                 harm=True,
+                 harm_type="total",
+                 harm_damage=0.1
                  ):
 
         self.obs_shape = (AGENT_VIEW, AGENT_VIEW, 3)
@@ -152,13 +155,26 @@ class Gridworld(VectorizedTask):
         self.place_resources = place_resources
         self.reproduction_on = reproduction_on
         self.overlap = overlap
+        self.harm = harm
+        self.harm_type = harm_type
+        self.harm_damage = harm_damage
 
-        self.genome = DefaultGenome(
-            num_inputs=(2 * AGENT_VIEW + 1) ** 2 * 3,
-            num_outputs=6,
-            max_nodes=50,
-            max_conns=1000
-        )
+        if self.harm:
+
+            self.genome = DefaultGenome(
+                num_inputs=(2 * AGENT_VIEW + 1) ** 2 * 3,
+                num_outputs=7,
+                max_nodes=50,
+                max_conns=1000
+            )
+
+        else:
+            self.genome = DefaultGenome(
+                num_inputs=(2 * AGENT_VIEW + 1) ** 2 * 3,
+                num_outputs=6,
+                max_nodes=50,
+                max_conns=1000
+            )
 
         def reset_fn(key):
 
@@ -450,6 +466,33 @@ class Gridworld(VectorizedTask):
 
             current_posx = state.agents.posx
             current_posy = state.agents.posy
+
+            # Attackers if harm setting on
+            if self.harm:
+
+                attackers = (action_int[:, 6] == 1) & (alive > 0)
+                attacker_ind = jnp.where(attackers, size=self.nb_agents)[0]
+                is_self = (attacker_ind[:, None] == jnp.arange(self.nb_agents)[None, :])
+
+                num_attackers = attackers.sum()
+                offsets_x, offsets_y = jnp.mgrid[-AGENT_VIEW:AGENT_VIEW + 1, -AGENT_VIEW:AGENT_VIEW + 1]
+                offsets_x = offsets_x.flatten()
+                offsets_y = offsets_y.flatten()
+
+                harm_x = current_posx[attacker_ind][:, None] + offsets_x[None, :]
+                harm_y = current_posy[attacker_ind][:, None] + offsets_y[None, :]
+
+                harm_x = jnp.clip(harm_x, 0, SX - 1)
+                harm_y = jnp.clip(harm_y, 0, SY - 1)
+
+                harm_pos_id = harm_x * SY + harm_y
+                alive_pos_id = jnp.where(alive > 0, current_posx * SY + current_posy, -1)
+                exposed_agents = (harm_pos_id[:, :, None] == alive_pos_id[None, None, :]).any(axis=1)
+                exposed_agents = exposed_agents & ~is_self
+
+                is_exposed = exposed_agents.any(axis=0)
+                energy = energy - jnp.where(is_exposed, self.harm_damage, 0)
+
 
             des_posx = current_posx - action_int[:, 1] + action_int[:, 3]
             des_posy = current_posy - action_int[:, 2] + action_int[:, 4]

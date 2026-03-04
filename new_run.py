@@ -81,6 +81,9 @@ def simple_run(config):
     config["examine_poison"] = False
     config["wall_kill"] = 1
     config["overlap"] = True
+    config["harm"] = True
+    config["harm_type"] = "total"
+    config["harm_damage"] = 0.1
 
     # project_dir = "."
 
