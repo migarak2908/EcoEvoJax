@@ -159,22 +159,18 @@ class Gridworld(VectorizedTask):
         self.harm_type = harm_type
         self.harm_damage = harm_damage
 
-        if self.harm:
+        self.num_actions = 7 if self.harm else 6
 
-            self.genome = DefaultGenome(
-                num_inputs=(2 * AGENT_VIEW + 1) ** 2 * 3,
-                num_outputs=7,
-                max_nodes=50,
-                max_conns=1000
-            )
 
-        else:
-            self.genome = DefaultGenome(
-                num_inputs=(2 * AGENT_VIEW + 1) ** 2 * 3,
-                num_outputs=6,
-                max_nodes=50,
-                max_conns=1000
-            )
+
+        self.genome = DefaultGenome(
+            num_inputs=(2 * AGENT_VIEW + 1) ** 2 * 3,
+            num_outputs=self.num_actions,
+            max_nodes=50,
+            max_conns=1000
+        )
+
+
 
         def reset_fn(key):
 
@@ -245,7 +241,7 @@ class Gridworld(VectorizedTask):
                                  nb_offspring=jnp.zeros((self.nb_agents,), dtype=jnp.uint16)
                                  )
 
-            return State(state=grid, obs=get_obs_vector(grid, posx, posy), last_actions=jnp.zeros((self.nb_agents, 6)),
+            return State(state=grid, obs=get_obs_vector(grid, posx, posy), last_actions=jnp.zeros((self.nb_agents, self.num_actions)),
                          rewards=jnp.zeros((self.nb_agents, 1)), agents=agents,
                          steps=jnp.zeros((), dtype=int), key=next_key)
 
@@ -457,7 +453,8 @@ class Gridworld(VectorizedTask):
                 self.genome.forward, in_axes=(None, (0, 0, 0, 0), 0)
             )(None, per_agent_transformed, obs_flat)
 
-            actions = jax.nn.one_hot(jax.random.categorical(next_key, actions_logits * 50, axis=-1), 6)
+
+            actions = jax.nn.one_hot(jax.random.categorical(next_key, actions_logits * 50, axis=-1), self.num_actions)
 
             grid = state.state
             energy = state.agents.energy
