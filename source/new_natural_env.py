@@ -64,10 +64,19 @@ def simulate(project_dir):
     for steps in range(config["max_time"]):
         state, _, _ = env.step(state)
 
+        action_counts = state.last_actions.sum(axis=0)
+
         # Report at specified frequency
         if steps % config["report_freq"] == 0:
             population_size = state.agents.alive.sum()
             print(f"Step {steps}, population size {population_size}")
+            print(
+                f"  Actions: stay={int(action_counts[0])}, move={int(action_counts[1:5].sum())}, reproduce={int(action_counts[5])}",
+                end="")
+            if len(action_counts) > 6:
+                print(f", attack={int(action_counts[6])}")
+            else:
+                print()
 
             # Check for extinction
             if population_size == 0:
