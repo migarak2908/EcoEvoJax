@@ -50,6 +50,7 @@ class AgentStates(object):
     alive: jnp.int8
     nb_food: jnp.ndarray
     nb_offspring: jnp.uint16
+    traits: jnp.ndarray # Shape (nb_agents, num_traits)
 
 
 @dataclass
@@ -70,6 +71,55 @@ def get_ob(state: jnp.ndarray, pos_x: jnp.int32, pos_y: jnp.int32) -> jnp.ndarra
     # obs=jnp.ravel(state)
 
     return obs
+
+def get_ob_with_traits(grid, pos_x, pos_y, all_posx, all_posy, all_traits, all_alive, SX, SY) -> jnp.ndarray:
+
+
+    # Base observation from grid (agent presence, food, walls)
+
+    padded_grid = jnp.pad(grid, ((AGENT_VIEW, AGENT_VIEW), (AGENT_VIEW, AGENT_VIEW), (0, 0)))
+    base_obs = jax.lax.dynamic_slice(
+        padded_grid,
+        (pos_x, pos_y, 0),
+        (2 * AGENT_VIEW + 1, 2 * AGENT_VIEW + 1, 3)
+    )
+
+    # Lookup: find traits for each cell in view
+    view = 2 * AGENT_VIEW + 1
+
+    # Cell coordinates in view (absolute positions)
+    view_coords_x = pos_x + jnp.arange(-AGENT_VIEW, AGENT_VIEW + 1)
+    view_coords_y = pos_y + jnp.arange(-AGENT_VIEW, AGENT_VIEW + 1)
+    cell_x = view_coords_x[:, None]
+    cell_y = view_coords_y[None, :]
+
+    # Check which cells are in bounds
+    in_bounds = (cell_x >= 0) & (cell_x < SX) & (cell_y >= 0) & (cell_y < SY)
+
+    # Clip for safe indexing
+    cell_x_safe = jnp.clip(cell_x, 0, SX - 1)
+    cell_y_safe = jnp.clip(cell_y, 0, SY - 1)
+
+    # Position ID for each cell in view
+    cell_pos_id = cell_x_safe * SY + cell_y_safe
+
+    # Position ID for each alive agent
+    agent_pos_id = jnp.where(all_alive > 0, all_posx * SY + all_posy, -1)
+
+    # Match: which agent at each cell
+
+    matches = (cell_pos_id[:, : , None] == agent_pos_id[None, None, :])
+    has_agent = matches.any(axis=2) & in_bounds
+    agent_idx = jnp.argmax(matches, axis=2)
+
+    # Get traits (zero if no agent or out of bounds)
+
+    cell_traits = all_traits[agent_idx]
+    cell_traits = jnp.where(has_agent[:, :, None], cell_traits, 0.0)
+
+    # Concatenate base obs + traits
+    full_obs = jnp.concatenate([base_obs, cell_traits], axis=-1)
+    return full_obs
 
 
 def get_init_state_fn(key: jnp.ndarray, SX, SY, posx, posy, pos_food_x, pos_food_y, niches_scale=200, resources_on=True) -> jnp.ndarray:
@@ -105,6 +155,12 @@ def get_init_state_fn(key: jnp.ndarray, SX, SY, posx, posy, pos_food_x, pos_food
 
 get_obs_vector = jax.vmap(get_ob, in_axes=(None, 0, 0), out_axes=0)
 
+get_obs_vector_with_traits = jax.vmap(
+    get_ob_with_traits,
+    in_axes=(None, 0, 0, None, None, None, None, None, None),
+    out_axes=0
+)
+
 
 class Gridworld(VectorizedTask):
     """gridworld task."""
@@ -131,7 +187,10 @@ class Gridworld(VectorizedTask):
                  overlap=True,
                  harm=True,
                  harm_type="total",
-                 harm_damage=0.1
+                 harm_damage=0.1,
+                 selective_reproduction=False,
+                 num_traits=3,
+                 trait_mutate_std= 0.1
                  ):
 
         self.obs_shape = (AGENT_VIEW, AGENT_VIEW, 3)
@@ -159,12 +218,19 @@ class Gridworld(VectorizedTask):
         self.harm_type = harm_type
         self.harm_damage = harm_damage
 
+        self.selective_reproduction = selective_reproduction
+        self.num_traits = num_traits
+        self.trait_mutate_std = trait_mutate_std
+
         self.num_actions = 7 if self.harm else 6
 
-
+        if self.selective_reproduction:
+            num_inputs = (2 * AGENT_VIEW + 1) ** 2 * (3 + num_traits)
+        else:
+            num_inputs = (2 * AGENT_VIEW + 1) ** 2 * 3
 
         self.genome = DefaultGenome(
-            num_inputs=(2 * AGENT_VIEW + 1) ** 2 * 3,
+            num_inputs=num_inputs,
             num_outputs=self.num_actions,
             max_nodes=50,
             max_conns=1000
@@ -229,26 +295,37 @@ class Gridworld(VectorizedTask):
                 )
             seqs, _, _, u_conns = jax.vmap(self.genome.transform, in_axes=(None, 0, 0))(None, nodes, conns)
 
+            next_key, key = random.split(key)
+            traits = random.uniform(next_key, (self.nb_agents, self.num_traits), minval=0.0, maxval=1.0)
+            alive = jnp.ones((self.nb_agents,), dtype=jnp.uint16).at[0:2 * self.nb_agents // 3].set(
+                                     0)
+
 
             agents = AgentStates(posx=posx, posy=posy, nodes=nodes, conns=conns, seqs=seqs, u_conns=u_conns,
                                  energy=self.max_ener * jnp.ones((self.nb_agents,)).at[0:5].set(0),
                                  time_good_level=jnp.zeros((self.nb_agents,), dtype=jnp.uint16),
                                  time_alive=jnp.zeros((self.nb_agents,), dtype=jnp.uint16),
                                  time_under_level=jnp.zeros((self.nb_agents,), dtype=jnp.uint16),
-                                 alive=jnp.ones((self.nb_agents,), dtype=jnp.uint16).at[0:2 * self.nb_agents // 3].set(
-                                     0),
+                                 alive=alive,
                                  nb_food=jnp.zeros((self.nb_agents,)),
-                                 nb_offspring=jnp.zeros((self.nb_agents,), dtype=jnp.uint16)
+                                 nb_offspring=jnp.zeros((self.nb_agents,), dtype=jnp.uint16),
+                                 traits=traits
                                  )
 
-            return State(state=grid, obs=get_obs_vector(grid, posx, posy), last_actions=jnp.zeros((self.nb_agents, self.num_actions)),
+            if self.selective_reproduction:
+                obs = get_obs_vector_with_traits(grid, posx, posy, posx, posy, traits, alive, SX, SY)
+            else:
+                obs = get_obs_vector(grid, posx, posy)
+
+
+            return State(state=grid, obs=obs, last_actions=jnp.zeros((self.nb_agents, self.num_actions)),
                          rewards=jnp.zeros((self.nb_agents, 1)), agents=agents,
                          steps=jnp.zeros((), dtype=int), key=next_key)
 
         self._reset_fn = jax.jit(reset_fn)
 
-        def mating_reproduce(action_int, posx, posy, nodes, conns, seqs, u_conns, energy, time_good_level, key, time_alive, alive, nb_food,
-                      nb_offspring, grid):
+        def mating_reproduce(action_int, action_logits,  posx, posy, nodes, conns, seqs, u_conns, energy, time_good_level, key, time_alive, alive, nb_food,
+                      nb_offspring, grid, traits):
 
             """
             1. Create dead mask as before
@@ -263,15 +340,6 @@ class Gridworld(VectorizedTask):
 
             next_key, key = random.split(key)
 
-            dx = jnp.abs(posx[:, None] - posx[None, :])
-            dy = jnp.abs(posy[:, None] - posy[None, :])
-
-            distance = jnp.maximum(dx, dy)
-            in_view = distance <= AGENT_VIEW
-
-            in_view = in_view & (~jnp.eye(num_agents, dtype=bool))
-
-
             reproducers = (action_int[:, 5] == 1) & (time_good_level > self.time_reproduce) & (alive > 0)
             # same_x = posx[:, None] == posx[None, :]
             # same_y = posy[:, None] == posy[None, :]
@@ -281,9 +349,49 @@ class Gridworld(VectorizedTask):
             #
             # valid_pairs = same_pos & (reproducers[:, None] & reproducers[None, :])
 
-            valid_pairs = in_view & (reproducers[:, None] & reproducers[None, :])
+            if self.selective_reproduction:
+                # Adjacency check (only up/down/left/right, not diagonal)
+                dx = posx[:, None] - posx[None, :]
+                dy = posy[:, None] - posy[None, :]
+                is_adjacent = ((jnp.abs(dx) == 1) & (dy == 0)) | ((dx == 0) & (jnp.abs(dy) == 1))
+                is_adjacent = is_adjacent & (~jnp.eye(num_agents, dtype=bool))
 
-            valid_pairs = jnp.triu(valid_pairs, k=1)
+                # Get preferred direction from movement logits (actions 1-4)
+                movement_logits = action_logits[:, 1:5]
+                preferred_dir = jnp.argmax(movement_logits, axis=1)  # 0,1,2,3
+
+                # Direction offsets: action 1=-x, action 2=-y, action 3=+x, action 4=+y
+                dir_dx = jnp.array([-1, 0, 1, 0])
+                dir_dy = jnp.array([0, -1, 0, 1])
+
+                pref_dx = dir_dx[preferred_dir]
+                pref_dy = dir_dy[preferred_dir]
+
+                # Where does each agent's preference point?
+                target_x = posx + pref_dx
+                target_y = posy + pref_dy
+
+                # i selects j if i's target position == j's position
+                i_selects_j = (target_x[:, None] == posx[None, :]) & (target_y[:, None] == posy[None, :])
+
+                # Mutual selection required
+                mutual_selection = i_selects_j & i_selects_j.T
+
+                # Valid pairs: adjacent + both reproducers + mutual selection
+                valid_pairs = is_adjacent & (reproducers[:, None] & reproducers[None, :]) & mutual_selection
+                valid_pairs = jnp.triu(valid_pairs, k=1)
+
+            else:
+                # Vision-based logic (current behavior)
+                dx = jnp.abs(posx[:, None] - posx[None, :])
+                dy = jnp.abs(posy[:, None] - posy[None, :])
+                distance = jnp.maximum(dx, dy)
+                in_view = distance <= AGENT_VIEW
+                in_view = in_view & (~jnp.eye(num_agents, dtype=bool))
+
+                valid_pairs = in_view & (reproducers[:, None] & reproducers[None, :])
+                valid_pairs = jnp.triu(valid_pairs, k=1)
+
 
 
             parent_i, parent_j = jnp.where(valid_pairs, size=max_pairs)
@@ -372,6 +480,21 @@ class Gridworld(VectorizedTask):
                 self.genome.transform, in_axes=(None, 0, 0)
             )(None, offspring_nodes, offspring_conns)
 
+            # Offspring traits - random selection from parents + mutation
+
+            parent1_traits = traits[parent_i]
+            parent2_traits = traits[parent_j]
+
+            next_key, key = random.split(key)
+            inherit_mask = random.uniform(next_key, parent1_traits.shape) > 0.5
+            offspring_traits = jnp.where(inherit_mask, parent1_traits, parent2_traits)
+
+            # Add mutation
+            next_key, key = random.split(key)
+            trait_noise = random.normal(next_key, offspring_traits.shape) * self.trait_mutate_std
+            offspring_traits = offspring_traits + trait_noise
+            offspring_traits = jnp.clip(offspring_traits, 0.0, 1.0)  # Keep in [0,1]
+
             # place_mask = jnp.arange(max_pairs) < num_offspring
             node_mask = place_mask[:, None, None]
             conn_mask = place_mask[:, None, None]
@@ -427,11 +550,15 @@ class Gridworld(VectorizedTask):
                 jnp.where(place_mask, 0, nb_offspring[target_spots])
             )
 
+            traits = traits.at[target_spots].set(
+                jnp.where(place_mask[:, None], offspring_traits, traits[target_spots])
+            )
+
             nb_offspring = nb_offspring.at[parent_i].add(jnp.where(place_mask, 1, 0))
             nb_offspring = nb_offspring.at[parent_j].add(jnp.where(place_mask, 1, 0))
 
             return (
-            nodes, conns, seqs, u_conns, posx, posy, energy, time_good_level, time_alive, alive, nb_food, nb_offspring)
+            nodes, conns, seqs, u_conns, posx, posy, energy, time_good_level, time_alive, alive, nb_food, nb_offspring, traits)
 
 
         def step_fn(state):
@@ -459,7 +586,9 @@ class Gridworld(VectorizedTask):
             grid = state.state
             energy = state.agents.energy
             alive = state.agents.alive
+            traits = state.agents.traits
             action_int = actions.astype(jnp.int32)
+
 
             current_posx = state.agents.posx
             current_posy = state.agents.posy
@@ -601,11 +730,11 @@ class Gridworld(VectorizedTask):
 
 
 
-            nodes, conns, seqs, u_conns, posx, posy, energy, time_good_level, time_alive, alive, nb_food, nb_offspring = jax.lax.cond(
-                reproducer.sum() > 0, mating_reproduce, lambda ai, px, py, n, c, s, u, e, tgl, k, ta, al, nf, no, g: (n, c, s, u, px, py, e, tgl, ta, al, nf, no),
+            nodes, conns, seqs, u_conns, posx, posy, energy, time_good_level, time_alive, alive, nb_food, nb_offspring, traits = jax.lax.cond(
+                reproducer.sum() > 0, mating_reproduce, lambda ai, alg, px, py, n, c, s, u, e, tgl, k, ta, al, nf, no, g, tr: (n, c, s, u, px, py, e, tgl, ta, al, nf, no, tr),
                 *(
-                    action_int, posx, posy, nodes, conns, seqs, u_conns, energy, time_good_level, next_key,
-                    time_alive, alive, nb_food, state.agents.nb_offspring, grid))
+                    action_int, actions_logits, posx, posy, nodes, conns, seqs, u_conns, energy, time_good_level, next_key,
+                    time_alive, alive, nb_food, state.agents.nb_offspring, grid, traits))
 
 
 
@@ -614,12 +743,16 @@ class Gridworld(VectorizedTask):
 
             done = False
             steps = jnp.where(done, jnp.zeros((), jnp.int32), steps)
-            cur_state = State(state=grid, obs=get_obs_vector(grid, posx, posy), last_actions=actions,
+            if self.selective_reproduction:
+                obs = get_obs_vector_with_traits(grid, posx, posy, posx, posy, traits, alive, SX, SY)
+            else:
+                obs = get_obs_vector(grid, posx, posy)
+            cur_state = State(state=grid, obs=obs, last_actions=actions,
                               rewards=jnp.expand_dims(rewards, -1),
                               agents=AgentStates(posx=posx, posy=posy, nodes=nodes, conns=conns, seqs=seqs, u_conns=u_conns,
                                                  energy=energy, time_good_level=time_good_level,
                                                  time_alive=time_alive, time_under_level=time_under_level, alive=alive,
-                                                 nb_food=nb_food, nb_offspring=nb_offspring),
+                                                 nb_food=nb_food, nb_offspring=nb_offspring, traits=traits),
                               steps=steps, key=key)
 
             # keep it in case we let agent several trials

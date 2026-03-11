@@ -84,6 +84,9 @@ def simple_run(config):
     config["harm"] = True
     config["harm_type"] = "total"
     config["harm_damage"] = 0.1
+    config["selective_reproduction"] = False
+    config["num_traits"] = 3
+    config["trait_mutate_std"] = 0.1
 
     # project_dir = "."
 

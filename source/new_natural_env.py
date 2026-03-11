@@ -46,10 +46,13 @@ def simulate(project_dir):
         energy_decay=config["energy_decay"],
         spontaneous_regrow=config["spontaneous_regrow"],
         wall_kill=config["wall_kill"],
-        overlap=True,
-        harm=True,
-        harm_type="total",
-        harm_damage=0.1
+        overlap=config["overlap"],
+        harm=config["harm"],
+        harm_type=config["harm_type"],
+        harm_damage=config["harm_damage"],
+        selective_reproduction=config["selective_reproduction"],
+        num_traits=config["num_traits"],
+        trait_mutate_std=config["trait_mutate_std"]
     )
 
     state = env.reset(env_key)
