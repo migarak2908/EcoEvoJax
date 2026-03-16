@@ -232,7 +232,7 @@ class Gridworld(VectorizedTask):
         self.genome = DefaultGenome(
             num_inputs=num_inputs,
             num_outputs=self.num_actions,
-            max_nodes=50,
+            max_nodes=150,
             max_conns=1000
         )
 
