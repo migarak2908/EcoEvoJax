@@ -629,8 +629,8 @@ class Gridworld(VectorizedTask):
                 posy = des_posy
             else:
                 # No overlap: energy-based conflict resolution
-                des_pos_id = des_posx * SY + des_posy
-                current_pos_id = current_posx * SY + current_posy
+                des_pos_id = des_posx.astype(jnp.int32) * SY + des_posy.astype(jnp.int32)
+                current_pos_id = current_posx.astype(jnp.int32) * SY + current_posy.astype(jnp.int32)
                 n = self.nb_agents
 
                 #Is the agent trying to move?
@@ -665,6 +665,7 @@ class Gridworld(VectorizedTask):
 
             if (wall_kill):
                 alive = jnp.where(hit_wall, 0, alive)
+
             posx = jnp.where(hit_wall, state.agents.posx, posx)
             posy = jnp.where(hit_wall, state.agents.posy, posy)
 
