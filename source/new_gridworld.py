@@ -640,6 +640,14 @@ class Gridworld(VectorizedTask):
                 occupied_positions = jnp.where(alive > 0, current_pos_id, -1)
                 dest_occupied = (des_pos_id[:, None] == occupied_positions[None, :]).any(axis=1)
 
+                #Detect swaps: i wants j's spot AND j wants i's spot
+                i_wants_j_spot = (des_pos_id[:, None] == current_pos_id[None, :])
+                j_wants_i_spot = (des_pos_id[None, :] == current_pos_id[:, None])
+                is_swap = i_wants_j_spot & j_wants_i_spot & is_moving[:, None] & is_moving[None, :]
+                has_swap_partner = is_swap.any(axis=1)
+
+                dest_blocked = dest_occupied & ~has_swap_partner
+
                 #Check for conflicts: multiple agents wanting same cell
                 same_dest = (des_pos_id[:, None] == des_pos_id[None, :])
                 same_dest = same_dest & (jnp.arange(n)[:, None] != jnp.arange(n)[None, :])
@@ -650,15 +658,19 @@ class Gridworld(VectorizedTask):
 
                 higher_energy = same_dest & (energy[None, :] > energy[:, None])
                 same_energy_lower_index = same_dest & (energy[:, None] == energy[None, :]) & \
-                                          jnp.arange(n)[None, :] < (jnp.arange(n)[:, None])
+                                          (jnp.arange(n)[None, :] < jnp.arange(n)[:, None])
                 loses_conflict = higher_energy.any(axis=1) | same_energy_lower_index.any(axis=1)
 
                 #Move succeeds if: trying to move, destination empty, and won conflicts
-                move_succeeds = is_moving & ~dest_occupied & ~loses_conflict
+                move_succeeds = is_moving & ~dest_blocked & ~loses_conflict
 
                 posx = jnp.where(move_succeeds, des_posx, current_posx)
                 posy = jnp.where(move_succeeds, des_posy, current_posy)
 
+                jax.debug.print("is_moving sum: {}", is_moving.sum())
+                jax.debug.print("dest_occupied sum: {}", dest_occupied.sum())
+                jax.debug.print("loses_conflict sum: {}", loses_conflict.sum())
+                jax.debug.print("move_succeeds sum: {}", move_succeeds.sum())
 
             # wall
             hit_wall = state.state[posx, posy, 2] > 0
