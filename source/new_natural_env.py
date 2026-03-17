@@ -11,6 +11,7 @@ import numpy as np
 import pickle
 from evojax.util import save_model, load_model
 import yaml
+import pandas as pd
 
 sys.path.append(os.getcwd())
 from source.new_gridworld import Gridworld
@@ -109,6 +110,8 @@ def simulate(project_dir):
                 print("All agents died")
                 break
 
+            pd.DataFrame(log_data).to_csv(project_dir + "/train/data/step_log.csv", index=False)
+
         # Add frame to video every step
         rgb_im = state.state[:, :, :3]
         rgb_im = jnp.clip(rgb_im, 0, 1)
@@ -144,7 +147,8 @@ def simulate(project_dir):
     if vid is not None:
         vid.close()
 
-
+    df = pd.DataFrame(log_data)
+    df.to_csv(project_dir + "/train/data/step_log.csv", index=False)
 
 
 if __name__ == "__main__":
