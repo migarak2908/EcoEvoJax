@@ -61,7 +61,7 @@ def simulate(project_dir):
     video_chunk_size = 100  # Create new video every N steps
     vid = VideoWriter(
         project_dir + "/train/media/steps_0.mp4",
-        20.0
+        4.0
     )
 
     log_data = {
@@ -112,27 +112,28 @@ def simulate(project_dir):
 
             pd.DataFrame(log_data).to_csv(project_dir + "/train/data/step_log.csv", index=False)
 
-        # Add frame to video every step
-        rgb_im = state.state[:, :, :3]
-        rgb_im = jnp.clip(rgb_im, 0, 1)
+        if steps % 5 == 0:
+            # Add frame to video every step
+            rgb_im = state.state[:, :, :3]
+            rgb_im = jnp.clip(rgb_im, 0, 1)
 
-        # change color scheme to white green and black
-        rgb_im = jnp.clip(rgb_im + jnp.expand_dims(state.state[:, :, 1], axis=-1), 0, 1)
-        rgb_im = rgb_im.at[:, :, 1].set(0)
-        rgb_im = 1 - rgb_im
+            # change color scheme to white green and black
+            rgb_im = jnp.clip(rgb_im + jnp.expand_dims(state.state[:, :, 1], axis=-1), 0, 1)
+            rgb_im = rgb_im.at[:, :, 1].set(0)
+            rgb_im = 1 - rgb_im
 
-        rgb_im = rgb_im - jnp.expand_dims(state.state[:, :, 0], axis=-1)
-        rgb_im = np.repeat(rgb_im, 2, axis=0)
-        rgb_im = np.repeat(rgb_im, 2, axis=1)
+            rgb_im = rgb_im - jnp.expand_dims(state.state[:, :, 0], axis=-1)
+            rgb_im = np.repeat(rgb_im, 2, axis=0)
+            rgb_im = np.repeat(rgb_im, 2, axis=1)
 
-        vid.add(rgb_im)
+            vid.add(rgb_im)
 
         # Start new video chunk
         if (steps + 1) % video_chunk_size == 0 and steps + 1 < config["max_time"]:
             vid.close()
             vid = VideoWriter(
                 project_dir + f"/train/media/steps_{steps + 1}.mp4",
-                20.0
+                4.0
             )
 
         # Save model at lower frequency
