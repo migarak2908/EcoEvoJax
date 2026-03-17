@@ -61,7 +61,7 @@ def simulate(project_dir):
     video_chunk_size = 100  # Create new video every N steps
     vid = VideoWriter(
         project_dir + "/train/media/steps_0.mp4",
-        4.0
+        20.0
     )
 
     log_data = {
@@ -73,10 +73,39 @@ def simulate(project_dir):
         'action_reproduce': [],
         'action_attack': []
     }
+    agent_log = []
+    prev_alive = np.array(state.agents.alive)
 
     # Main simulation loop
     for steps in range(config["max_time"]):
         state, _, _ = env.step(state)
+
+        current_alive = np.array(state.agents.alive)
+        just_died = (prev_alive > 0) & (current_alive == 0)
+
+        if just_died.any():
+            dead_indices = np.where(just_died)[0]
+            batch_data = {
+                  'agent_id': np.array(state.agents.agent_id[dead_indices]),
+                  'parent1_id': np.array(state.agents.parent1_id[dead_indices]),
+                  'parent2_id': np.array(state.agents.parent2_id[dead_indices]),
+                  'death_step': np.full(len(dead_indices), steps),
+                  'lifespan': np.array(state.agents.time_alive[dead_indices]),
+                  'offspring': np.array(state.agents.nb_offspring[dead_indices]),
+                  'food_eaten': np.array(state.agents.nb_food[dead_indices]),
+                  'nodes': np.array(state.agents.nodes[dead_indices]),
+                  'conns': np.array(state.agents.conns[dead_indices])
+              }
+            agent_log.append(batch_data)
+
+        prev_alive = current_alive.copy()
+
+        if len(agent_log) >= 1000:
+            save_agent_log(agent_log, project_dir, steps)
+            agent_log = []
+
+
+
 
         alive_mask = (state.agents.alive > 0)[:, None]
         alive_actions = state.last_actions * alive_mask
@@ -112,7 +141,7 @@ def simulate(project_dir):
 
             pd.DataFrame(log_data).to_csv(project_dir + "/train/data/step_log.csv", index=False)
 
-        if steps % 5 == 0:
+        if steps % 1 == 0:
             # Add frame to video every step
             rgb_im = state.state[:, :, :3]
             rgb_im = jnp.clip(rgb_im, 0, 1)
@@ -133,7 +162,7 @@ def simulate(project_dir):
             vid.close()
             vid = VideoWriter(
                 project_dir + f"/train/media/steps_{steps + 1}.mp4",
-                4.0
+                20.0
             )
 
         # Save model at lower frequency
@@ -150,6 +179,37 @@ def simulate(project_dir):
 
     df = pd.DataFrame(log_data)
     df.to_csv(project_dir + "/train/data/step_log.csv", index=False)
+
+    if agent_log:
+        save_agent_log(agent_log, project_dir, "final")
+
+
+def save_agent_log(agent_log, project_dir, label):
+      """Combine batches and save."""
+      combined = {
+          'agent_id': np.concatenate([b['agent_id'] for b in agent_log]),
+          'parent1_id': np.concatenate([b['parent1_id'] for b in agent_log]),
+          'parent2_id': np.concatenate([b['parent2_id'] for b in agent_log]),
+          'death_step': np.concatenate([b['death_step'] for b in agent_log]),
+          'lifespan': np.concatenate([b['lifespan'] for b in agent_log]),
+          'offspring': np.concatenate([b['offspring'] for b in agent_log]),
+          'food_eaten': np.concatenate([b['food_eaten'] for b in agent_log]),
+      }
+
+      # Save stats as CSV (easy analysis)
+      df = pd.DataFrame({k: v for k, v in combined.items()
+                         if k not in ['nodes', 'conns']})
+      df.to_csv(f"{project_dir}/train/data/agent_stats_{label}.csv", index=False)
+
+      # Save networks separately as pickle (large)
+      networks = {
+          'agent_id': combined['agent_id'],
+          'nodes': np.concatenate([b['nodes'] for b in agent_log]),
+          'conns': np.concatenate([b['conns'] for b in agent_log])
+      }
+      with open(f"{project_dir}/train/models/networks_{label}.pkl", "wb") as f:
+          pickle.dump(networks, f)
+
 
 
 if __name__ == "__main__":

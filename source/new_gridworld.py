@@ -51,6 +51,9 @@ class AgentStates(object):
     nb_food: jnp.ndarray
     nb_offspring: jnp.uint16
     traits: jnp.ndarray # Shape (nb_agents, num_traits)
+    agent_id: jnp.int32
+    parent1_id: jnp.int32
+    parent2_id: jnp.int32
 
 
 @dataclass
@@ -62,6 +65,7 @@ class State(TaskState):
     agents: AgentStates
     steps: jnp.int32
     key: jnp.ndarray
+    next_agent_id: jnp.int32
 
 
 def get_ob(state: jnp.ndarray, pos_x: jnp.int32, pos_y: jnp.int32) -> jnp.ndarray:
@@ -300,6 +304,9 @@ class Gridworld(VectorizedTask):
             alive = jnp.ones((self.nb_agents,), dtype=jnp.uint16).at[0:2 * self.nb_agents // 3].set(
                                      0)
 
+            initial_ids = jnp.arange(self.nb_agents, dtype=jnp.int32)
+            parent1_ids = jnp.full((self.nb_agents,), -1, dtype=jnp.int32)
+            parent2_ids = jnp.full((self.nb_agents,), -1, dtype=jnp.int32)
 
             agents = AgentStates(posx=posx, posy=posy, nodes=nodes, conns=conns, seqs=seqs, u_conns=u_conns,
                                  energy=self.max_ener * jnp.ones((self.nb_agents,)).at[0:5].set(0),
@@ -309,7 +316,7 @@ class Gridworld(VectorizedTask):
                                  alive=alive,
                                  nb_food=jnp.zeros((self.nb_agents,)),
                                  nb_offspring=jnp.zeros((self.nb_agents,), dtype=jnp.uint16),
-                                 traits=traits
+                                 traits=traits, agent_id=initial_ids, parent1_id=parent1_ids, parent2_id=parent2_ids
                                  )
 
             if self.selective_reproduction:
@@ -320,12 +327,12 @@ class Gridworld(VectorizedTask):
 
             return State(state=grid, obs=obs, last_actions=jnp.zeros((self.nb_agents, self.num_actions)),
                          rewards=jnp.zeros((self.nb_agents, 1)), agents=agents,
-                         steps=jnp.zeros((), dtype=int), key=next_key)
+                         steps=jnp.zeros((), dtype=int), key=next_key, next_agent_id=jnp.int32(self.nb_agents))
 
         self._reset_fn = jax.jit(reset_fn)
 
         def mating_reproduce(action_int, action_logits,  posx, posy, nodes, conns, seqs, u_conns, energy, time_good_level, key, time_alive, alive, nb_food,
-                      nb_offspring, grid, traits):
+                      nb_offspring, grid, traits, agent_id, parent1_id, parent2_id, next_agent_id):
 
             """
             1. Create dead mask as before
@@ -450,6 +457,13 @@ class Gridworld(VectorizedTask):
             cumsum_places = jnp.cumsum(place_mask)
             place_mask = place_mask & (cumsum_places <= num_empty)
 
+            num_reproducing = place_mask.sum()
+            new_ids = next_agent_id + jnp.arange(max_pairs, dtype=jnp.int32)
+            new_next_agent_id = next_agent_id + num_reproducing
+
+            offspring_parent1_id = agent_id[parent_i]
+            offspring_parent2_id = agent_id[parent_j]
+
             target_spots = empty_spots[:max_pairs]
 
             parent1_nodes = nodes[parent_i]
@@ -554,11 +568,22 @@ class Gridworld(VectorizedTask):
                 jnp.where(place_mask[:, None], offspring_traits, traits[target_spots])
             )
 
+            agent_id = agent_id.at[target_spots].set(
+                jnp.where(place_mask, new_ids, agent_id[target_spots])
+            )
+
+            parent1_id = parent1_id.at[target_spots].set(
+                jnp.where(place_mask, offspring_parent1_id, parent1_id[target_spots])
+            )
+            parent2_id = parent2_id.at[target_spots].set(
+                jnp.where(place_mask, offspring_parent2_id, parent2_id[target_spots])
+            )
+
             nb_offspring = nb_offspring.at[parent_i].add(jnp.where(place_mask, 1, 0))
             nb_offspring = nb_offspring.at[parent_j].add(jnp.where(place_mask, 1, 0))
 
             return (
-            nodes, conns, seqs, u_conns, posx, posy, energy, time_good_level, time_alive, alive, nb_food, nb_offspring, traits)
+            nodes, conns, seqs, u_conns, posx, posy, energy, time_good_level, time_alive, alive, nb_food, nb_offspring, traits, agent_id, parent1_id, parent2_id, new_next_agent_id)
 
 
         def step_fn(state):
@@ -588,6 +613,10 @@ class Gridworld(VectorizedTask):
             alive = state.agents.alive
             traits = state.agents.traits
             action_int = actions.astype(jnp.int32)
+            agent_id = state.agents.agent_id
+            parent1_id = state.agents.parent1_id
+            parent2_id = state.agents.parent2_id
+            next_agent_id = state.next_agent_id
 
 
             current_posx = state.agents.posx
@@ -741,13 +770,17 @@ class Gridworld(VectorizedTask):
 
             nodes, conns, seqs, u_conns = state.agents.nodes, state.agents.conns, state.agents.seqs, state.agents.u_conns
 
-
-
-            nodes, conns, seqs, u_conns, posx, posy, energy, time_good_level, time_alive, alive, nb_food, nb_offspring, traits = jax.lax.cond(
-                reproducer.sum() > 0, mating_reproduce, lambda ai, alg, px, py, n, c, s, u, e, tgl, k, ta, al, nf, no, g, tr: (n, c, s, u, px, py, e, tgl, ta, al, nf, no, tr),
+            nodes, conns, seqs, u_conns, posx, posy, energy, time_good_level, time_alive, alive, nb_food, nb_offspring, traits, agent_id, parent1_id, parent2_id, next_agent_id = (
+                jax.lax.cond(
+                reproducer.sum() > 0,
+                mating_reproduce,
+                lambda ai, alg, px, py, n, c, s, u, e, tgl, k, ta, al, nf, no, g, tr, aid, p1i, p2i, nai: (
+                n, c, s, u, px, py, e, tgl, ta, al, nf, no, tr, aid, p1i, p2i, nai),
                 *(
-                    action_int, actions_logits, posx, posy, nodes, conns, seqs, u_conns, energy, time_good_level, next_key,
-                    time_alive, alive, nb_food, state.agents.nb_offspring, grid, traits))
+                    action_int, actions_logits, posx, posy, nodes, conns, seqs, u_conns, energy, time_good_level,
+                    next_key,
+                    time_alive, alive, nb_food, state.agents.nb_offspring, grid, traits, agent_id, parent1_id,
+                    parent2_id, next_agent_id)))
 
 
 
@@ -765,8 +798,8 @@ class Gridworld(VectorizedTask):
                               agents=AgentStates(posx=posx, posy=posy, nodes=nodes, conns=conns, seqs=seqs, u_conns=u_conns,
                                                  energy=energy, time_good_level=time_good_level,
                                                  time_alive=time_alive, time_under_level=time_under_level, alive=alive,
-                                                 nb_food=nb_food, nb_offspring=nb_offspring, traits=traits),
-                              steps=steps, key=key)
+                                                 nb_food=nb_food, nb_offspring=nb_offspring, traits=traits, agent_id=agent_id, parent1_id=parent1_id, parent2_id=parent2_id),
+                              steps=steps, key=key, next_agent_id=next_agent_id)
 
             # keep it in case we let agent several trials
             state = jax.lax.cond(
