@@ -63,11 +63,34 @@ def simulate(project_dir):
         20.0
     )
 
+    log_data = {
+        'step': [],
+        'population': [],
+        'food': [],
+        'action_stay': [],
+        'action_move': [],
+        'action_reproduce': [],
+        'action_attack': []
+    }
+
     # Main simulation loop
     for steps in range(config["max_time"]):
         state, _, _ = env.step(state)
 
-        action_counts = state.last_actions.sum(axis=0)
+        alive_mask = (state.agents.alive > 0)[:, None]
+        alive_actions = state.last_actions * alive_mask
+        action_counts = alive_actions.sum(axis=0)
+
+        log_data['step'].append(steps)
+        log_data['population'].append(int(state.agents.alive.sum()))
+        log_data['food'].append(float(state.state[:, :, 1].sum()))
+        log_data['action_stay'].append(int(action_counts[0]))
+        log_data['action_move'].append(int(action_counts[1:5].sum()))
+        log_data['action_reproduce'].append(int(action_counts[5]))
+        if len(action_counts) > 6:
+            log_data['action_attack'].append(int(action_counts[6]))
+        else:
+            log_data['action_attack'].append(0)
 
         # Report at specified frequency
         if steps % config["report_freq"] == 0:
