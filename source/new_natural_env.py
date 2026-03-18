@@ -166,12 +166,12 @@ def simulate(project_dir):
             )
 
         # Save model at lower frequency
-        if steps % (config["report_freq"] * 10) == 0:
-            with open(project_dir + "/train/models/step_" + str(steps) + ".pkl", "wb") as f:
-                pickle.dump({
-                    "nodes": state.agents.nodes,
-                    "conns": state.agents.conns
-                }, f)
+        # if steps % (config["report_freq"] * 10) == 0:
+        #     with open(project_dir + "/train/models/step_" + str(steps) + ".pkl", "wb") as f:
+        #         pickle.dump({
+        #             "nodes": state.agents.nodes,
+        #             "conns": state.agents.conns
+        #         }, f)
 
     # Cleanup
     if vid is not None:
